@@ -1,0 +1,14 @@
+tracker_type: botsort
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.15
+track_buffer: 60
+match_thresh: 0.9
+fuse_score: True
+
+# --- BoT-SORT Specific Settings ---
+gmc_method: sparseOptFlow 
+with_reid: True         
+appearance_thresh: 0.6  
+proximity_thresh: 0.5
+model: auto              # <-- This fixes the crash!
