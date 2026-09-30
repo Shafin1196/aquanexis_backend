@@ -10,8 +10,7 @@ from rest_framework.authtoken.models import Token
 from ultralytics import YOLO
 from .models import Device, SensorLog
 # best.pt
-model = YOLO('best2.pt')
-
+model = YOLO('best2.pt') 
 class VideoStreamConsumer(AsyncWebsocketConsumer):
     last_alert_time = {}
     COOLDOWN_SECONDS = 60
@@ -132,7 +131,7 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
             tracker="my_botsort.yaml",
             conf=0.15,
             iou=0.5,
-            verbose=False
+            verbose=False,
         )
 
         if results[0].boxes.cls is not None:

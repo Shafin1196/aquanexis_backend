@@ -1,8 +1,8 @@
 import cv2, asyncio, websockets, json
 
 async def stream():
-    uri = "ws://127.0.0.1:8000/ws/device/esp_p4_001/?role=producer&key=a4ef63f7-697f-4e65-8fa5-0b7b13fe7a5e"
-    cap = cv2.VideoCapture("test1.mp4") # Or 0 for webcam
+    uri = "ws://192.168.0.113:8000/ws/device/esp_p4_001/?role=producer&key=a4ef63f7-697f-4e65-8fa5-0b7b13fe7a5e"
+    cap = cv2.VideoCapture("test.mp4") # Or 0 for webcam
     
     async with websockets.connect(uri) as ws:
         # Listen for servo commands from Flutter in the background

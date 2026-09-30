@@ -24,8 +24,10 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-if%wo1(qg(i5cz%^@8%#g
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
-
-ALLOWED_HOSTS = ['aquanexis-backend.onrender.com', 'localhost', '127.0.0.1']
+ALLOWED_HOSTS = os.environ.get(
+    'ALLOWED_HOSTS',
+    'aquanexis-backend.onrender.com,localhost,127.0.0.1'
+).split(',')
 
 # Application definition
 
