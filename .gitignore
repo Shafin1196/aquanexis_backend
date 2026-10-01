@@ -1,0 +1,19 @@
+# Editor and environment
+.vscode/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local databases
+*.sqlite3
+db.sqlite3
+db.sqlite3-journal
+
+# Media and model artifacts
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.pt
