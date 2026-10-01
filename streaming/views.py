@@ -22,7 +22,9 @@ class RegisterView(APIView):
                 "token": token.key,
                 "device": {
                     "device_id": device.device_id,
-                    "is_online": device.is_online
+                    "is_online": device.is_online,
+                    "last_seen": device.last_seen,
+                    "device_web_stream_key": str(device.secret_key)
                 }
             }, status=status.HTTP_201_CREATED)
             
