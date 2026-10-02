@@ -143,7 +143,9 @@ CHANNEL_LAYERS = {
         },
     },
 }
-
+CSRF_TRUSTED_ORIGINS = [
+    "https://aquanexis-backend.onrender.com",
+]
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
