@@ -125,22 +125,33 @@ class SensorHistoryView(APIView):
 
         return Response(data, status=status.HTTP_200_OK)
 
-def test_redis(request):
+from django.http import JsonResponse
+from channels.layers import get_channel_layer
+import uuid
+
+
+async def test_redis(request):
     try:
-        client = redis.from_url(
-            os.environ["REDIS_URL"],
-            decode_responses=True,
+        channel_layer = get_channel_layer()
+
+        channel_name = "test_" + uuid.uuid4().hex
+
+        await channel_layer.group_add(
+            "aquanexis_test_group",
+            channel_name,
         )
 
-        result = client.ping()
+        await channel_layer.group_discard(
+            "aquanexis_test_group",
+            channel_name,
+        )
 
         return JsonResponse({
-            "redis": "connected",
-            "ping": result,
+            "channels": "working",
         })
 
     except Exception as e:
         return JsonResponse({
-            "redis": "failed",
+            "channels": "error",
             "error": str(e),
         }, status=500)
