@@ -24,7 +24,6 @@ class RegisterView(APIView):
                     "device_id": device.device_id,
                     "is_online": device.is_online,
                     "last_seen": device.last_seen,
-                    "device_web_stream_key": str(device.secret_key)
                 }
             }, status=status.HTTP_201_CREATED)
             
@@ -70,13 +69,21 @@ class LoginView(APIView):
 
         # Retrieve the user's paired ESP32 device
         device_info = None
+        websocket_url = None
         try:
             device = user.device
             device_info = {
                 "device_id": device.device_id,
                 "is_online": device.is_online,
-                "last_seen": device.last_seen
+                "last_seen": device.last_seen,
+                "secure_key": device.secret_key
             }
+            websocket_scheme = "wss" if request.is_secure() else "ws"
+            websocket_url = (
+                f"{websocket_scheme}://{request.get_host()}"
+                f"/ws/device/{device.device_id}/"
+                f"?role=producer&key={device.secret_key}"
+            )
         except Device.DoesNotExist:
             device_info = None
 
@@ -88,7 +95,8 @@ class LoginView(APIView):
                 "username": user.username,
                 "email": user.email
             },
-            "device": device_info
+            "device": device_info,
+            "device_websocket_url": websocket_url
         }, status=status.HTTP_200_OK)
 
 
