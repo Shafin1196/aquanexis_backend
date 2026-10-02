@@ -7,7 +7,9 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from .serializers import UserRegistrationSerializer
 from .models import Device, SensorLog
-
+import os
+import redis
+from django.http import JsonResponse
 class RegisterView(APIView):
     permission_classes = [] 
 
@@ -122,3 +124,23 @@ class SensorHistoryView(APIView):
         } for log in logs]
 
         return Response(data, status=status.HTTP_200_OK)
+
+def test_redis(request):
+    try:
+        client = redis.from_url(
+            os.environ["REDIS_URL"],
+            decode_responses=True,
+        )
+
+        result = client.ping()
+
+        return JsonResponse({
+            "redis": "connected",
+            "ping": result,
+        })
+
+    except Exception as e:
+        return JsonResponse({
+            "redis": "failed",
+            "error": str(e),
+        }, status=500)
