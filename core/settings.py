@@ -143,6 +143,9 @@ CHANNEL_LAYERS = {
         },
     },
 }
+REDIS_URL = os.environ.get("REDIS_URL")
+
+print("REDIS_URL:", REDIS_URL)
 CSRF_TRUSTED_ORIGINS = [
     "https://aquanexis-backend.onrender.com",
 ]
