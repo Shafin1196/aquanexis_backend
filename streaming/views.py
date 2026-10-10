@@ -165,7 +165,7 @@ def database_status(request):
         "database_vendor": connection.vendor,
         "database_engine": database.get("ENGINE"),
         "database_host": database.get("HOST"),
-        "database_name": database.get("NAME"),
+        "database_name": str(database.get("NAME", "")),
     }
 
     try:
