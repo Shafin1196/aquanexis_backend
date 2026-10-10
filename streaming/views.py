@@ -157,12 +157,24 @@ async def test_redis(request):
         }, status=500)
 
 
-from django.db import connection
+from django.db import connection, DatabaseError
 
 def database_status(request):
-    return JsonResponse({
+    database = connection.settings_dict
+    response = {
         "database_vendor": connection.vendor,
-        "database_engine": connection.settings_dict["ENGINE"],
-        "database_host": connection.settings_dict["HOST"],
-        "database_name": connection.settings_dict["NAME"],
-    })
+        "database_engine": database.get("ENGINE"),
+        "database_host": database.get("HOST"),
+        "database_name": database.get("NAME"),
+    }
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            response["connection"] = "ok"
+    except DatabaseError as error:
+        response["connection"] = "error"
+        response["error"] = str(error)
+        return JsonResponse(response, status=503)
+
+    return JsonResponse(response)
