@@ -7,11 +7,11 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from .serializers import UserRegistrationSerializer
 from .models import Device, SensorLog
-import os
-import redis
-from django.http import JsonResponse
+
+
 class RegisterView(APIView):
-    permission_classes = [] 
+    permission_classes = []
+
 
     def post(self, request):
         serializer = UserRegistrationSerializer(data=request.data)
@@ -28,23 +28,28 @@ class RegisterView(APIView):
                     "last_seen": device.last_seen,
                 }
             }, status=status.HTTP_201_CREATED)
-            
+           
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 
 
 class LoginView(APIView):
     permission_classes = []  # Public endpoint
+
 
     def post(self, request):
         # Support login via either username or email
         identifier = request.data.get('username') or request.data.get('email')
         password = request.data.get('password')
 
+
         if not identifier or not password:
             return Response(
                 {"error": "Please provide both email/username and password."},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
 
         # If user entered an email, resolve it to their username
         username = identifier
@@ -58,7 +63,9 @@ class LoginView(APIView):
                     status=status.HTTP_401_UNAUTHORIZED
                 )
 
+
         user = authenticate(username=username, password=password)
+
 
         if not user:
             return Response(
@@ -66,8 +73,10 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
+
         # Retrieve or generate the auth token
         token, _ = Token.objects.get_or_create(user=user)
+
 
         # Retrieve the user's paired ESP32 device
         device_info = None
@@ -89,6 +98,7 @@ class LoginView(APIView):
         except Device.DoesNotExist:
             device_info = None
 
+
         return Response({
             "message": "Login successful",
             "token": token.key,
@@ -102,8 +112,17 @@ class LoginView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+
+
 class SensorHistoryView(APIView):
     permission_classes = [IsAuthenticated]
+    SENSOR_FIELDS = {
+        "ph": ("ph", "pH"),
+        "turbidity": ("turbidity", "turbidity"),
+        "temperature": ("temperature", "temperature"),
+        "weight": ("weight", "weight"),
+    }
+
 
     def get(self, request):
         # Get the device belonging to the logged-in user
@@ -112,46 +131,51 @@ class SensorHistoryView(APIView):
         except Device.DoesNotExist:
             return Response({"error": "No device paired with this user."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Fetch the last 100 sensor logs, ordered by newest first
-        logs = SensorLog.objects.filter(device=device).order_by('-timestamp')[:100]
-        
-        data = [{
-            "pH": log.ph,
-            "turbidity": log.turbidity,
-            "temperature": log.temperature,
-            "weight": log.weight,
-            "timestamp": log.timestamp
-        } for log in logs]
+
+        field = request.query_params.get("field")
+        if field is not None:
+            field_config = self.SENSOR_FIELDS.get(field.lower())
+            if field_config is None:
+                return Response(
+                    {
+                        "error": "Invalid field. Choose one of: "
+                        + ", ".join(self.SENSOR_FIELDS)
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+
+            model_field, response_field = field_config
+            logs = (
+                SensorLog.objects.filter(
+                    device=device,
+                    **{f"{model_field}__isnull": False},
+                )
+                .order_by("-timestamp")
+            )
+            data = [
+                {
+                    response_field: getattr(log, model_field),
+                    "timestamp": log.timestamp,
+                }
+                for log in logs
+            ]
+        else:
+            # Fetch the last 100 sensor logs, ordered by newest first
+            logs = SensorLog.objects.filter(device=device).order_by("-timestamp")[:100]
+            data = [
+                {
+                    "pH": log.ph,
+                    "turbidity": log.turbidity,
+                    "temperature": log.temperature,
+                    "weight": log.weight,
+                    "timestamp": log.timestamp,
+                }
+                for log in logs
+            ]
+
 
         return Response(data, status=status.HTTP_200_OK)
 
-from django.http import JsonResponse
-from channels.layers import get_channel_layer
-import uuid
 
 
-async def test_redis(request):
-    try:
-        channel_layer = get_channel_layer()
-
-        channel_name = "test_" + uuid.uuid4().hex
-
-        await channel_layer.group_add(
-            "aquanexis_test_group",
-            channel_name,
-        )
-
-        await channel_layer.group_discard(
-            "aquanexis_test_group",
-            channel_name,
-        )
-
-        return JsonResponse({
-            "channels": "working",
-        })
-
-    except Exception as e:
-        return JsonResponse({
-            "channels": "error",
-            "error": str(e),
-        }, status=500)

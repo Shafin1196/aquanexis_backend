@@ -8,7 +8,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'device_id']
+        fields = ['username', 'email', 'password', 'device_id',]
 
     def validate_device_id(self, value):
         # 1. Does this device exist in your system at all?
@@ -21,19 +21,22 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         # 2. IS IT ALREADY REGISTERED? (Your exact rule)
         if device.owner is not None:
             raise serializers.ValidationError("This Device ID is already registered to another user.")
-            
+           
         return value
 
     def create(self, validated_data):
         device_id = validated_data.pop('device_id')
         password = validated_data.pop('password')
-        
+       
         # Create the new user
         user = User.objects.create_user(**validated_data, password=password)
-        
+       
         # Assign the device to this new user
         device = Device.objects.get(device_id=device_id)
         device.owner = user
         device.save()
-        
+       
         return user
+
+
+
