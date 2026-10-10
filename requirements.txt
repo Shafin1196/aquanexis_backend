@@ -17,6 +17,7 @@ cryptography==50.0.1
 cycler==0.12.1
 daphne==4.2.3
 Django==6.1.1
+mysqlclient==2.3.0
 djangorestframework==3.18.1
 filelock==3.32.6
 fonttools==4.65.0
