@@ -155,3 +155,14 @@ async def test_redis(request):
             "channels": "error",
             "error": str(e),
         }, status=500)
+
+
+from django.db import connection
+
+def database_status(request):
+    return JsonResponse({
+        "database_vendor": connection.vendor,
+        "database_engine": connection.settings_dict["ENGINE"],
+        "database_host": connection.settings_dict["HOST"],
+        "database_name": connection.settings_dict["NAME"],
+    })
