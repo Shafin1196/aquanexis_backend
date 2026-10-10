@@ -3,9 +3,11 @@ import numpy as np
 import asyncio
 import json
 import time
+import uuid
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from ultralytics import YOLO
 from .models import Device, SensorLog
@@ -21,6 +23,7 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.device_id = self.scope['url_route']['kwargs']['device_id']
         self.group_name = f"device_{self.device_id}"
+        self.connection_id = uuid.uuid4()
 
 
         # Parse query parameters from URL: ws://.../?role=...&token=...&key=...
@@ -51,7 +54,11 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
 
         elif self.role == 'producer':
-            is_valid_device = await self.verify_and_set_producer_online(self.device_id, device_key)
+            is_valid_device = await self.verify_and_set_producer_online(
+                self.device_id,
+                device_key,
+                self.connection_id,
+            )
             if not is_valid_device:
                 print(f"Producer rejected: Device {self.device_id} not recognized or invalid secret key.")
                 await self.close(code=4003)
@@ -190,13 +197,14 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
 
     @database_sync_to_async
-    def verify_and_set_producer_online(self, device_id, secret_key):
+    def verify_and_set_producer_online(self, device_id, secret_key, connection_id):
         try:
             device = Device.objects.get(device_id=device_id)
             if secret_key and str(device.secret_key) != secret_key:
                 return False
             device.is_online = True
-            device.save(update_fields=['is_online', 'last_seen'])
+            device.producer_connection_id = connection_id
+            device.save(update_fields=['is_online', 'last_seen', 'producer_connection_id'])
             return True
         except Device.DoesNotExist:
             return False
@@ -205,9 +213,13 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def set_producer_offline(self, device_id):
         try:
-            device = Device.objects.get(device_id=device_id)
-            device.is_online = False
-            device.save(update_fields=['is_online', 'last_seen'])
+            Device.objects.filter(
+                device_id=device_id,
+                producer_connection_id=self.connection_id,
+            ).update(
+                is_online=False,
+                producer_connection_id=None,
+            )
         except Device.DoesNotExist:
             pass
 
@@ -217,7 +229,11 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def save_sensor_log(self, device_id, data):
         try:
-            device = Device.objects.get(device_id=device_id)
+            connection_id = getattr(self, "connection_id", None)
+            device_query = Device.objects.filter(device_id=device_id)
+            if connection_id is not None:
+                device_query = device_query.filter(producer_connection_id=connection_id)
+            device = device_query.get()
             SensorLog.objects.create(
                 device=device,
                 ph=data.get('pH'),
@@ -225,9 +241,8 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
                 temperature=data.get('temperature'),
                 weight=data.get('weight')  # <-- Save weight data
             )
+            device.save(update_fields=['is_online', 'last_seen'])
         except Device.DoesNotExist:
             pass
    
-
-
 

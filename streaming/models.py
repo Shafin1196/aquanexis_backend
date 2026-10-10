@@ -12,6 +12,7 @@ class Device(models.Model):
     # Online status tracking
     is_online = models.BooleanField(default=False)
     last_seen = models.DateTimeField(auto_now=True)
+    producer_connection_id = models.UUIDField(null=True, blank=True, editable=False)
     
     # The owner. OneToOneField means a device can only have ONE owner.
     # null=True allows you to add devices to the DB before a user buys/claims them.
