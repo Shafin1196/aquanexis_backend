@@ -170,11 +170,26 @@ CHANNEL_LAYERS = {
 }
 CSRF_TRUSTED_ORIGINS = [
     "https://objectives-renewable-minority-drivers.trycloudflare.com",
-    "https://jobs-exclusively-magic-trademark.trycloudflare.com",
+    "https://evaluated-are-declined-wrapping.trycloudflare.com",
 ]
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
     ],
 }
-
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'streaming': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}

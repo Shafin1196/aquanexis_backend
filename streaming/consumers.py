@@ -2,8 +2,10 @@ import cv2
 import numpy as np
 import asyncio
 import json
+import logging
 import time
 import uuid
+from datetime import timedelta
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -13,11 +15,14 @@ from ultralytics import YOLO
 from .models import Device, SensorLog
 # best.pt
 model = YOLO('best2.pt')
+logger = logging.getLogger(__name__)
 
 
 class VideoStreamConsumer(AsyncWebsocketConsumer):
     last_alert_time = {}
     COOLDOWN_SECONDS = 60
+    PRODUCER_TIMEOUT_SECONDS = Device.PRODUCER_TIMEOUT_SECONDS
+    PRODUCER_WATCHDOG_INTERVAL_SECONDS = 1
 
 
     async def connect(self):
@@ -67,6 +72,9 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
             await self.channel_layer.group_add(self.group_name, self.channel_name)
             await self.accept()
+            self.producer_watchdog_task = asyncio.create_task(
+                self.watch_producer_activity()
+            )
             print(f"Producer connected: Device {self.device_id} is now ONLINE.")
 
 
@@ -84,20 +92,24 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
 
         if getattr(self, 'role', None) == 'producer':
-            await self.set_producer_offline(self.device_id)
-            print(f"Producer disconnected: Device {self.device_id} is now OFFLINE.")
+            watchdog_task = getattr(self, "producer_watchdog_task", None)
+            if watchdog_task is not None:
+                watchdog_task.cancel()
+                await asyncio.gather(watchdog_task, return_exceptions=True)
 
-
-            # Notify viewers that hardware lost connection
-            await self.channel_layer.group_send(
-                self.group_name,
-                {"type": "device_status", "status": "offline"}
-            )
+            changed = await self.set_producer_offline(self.device_id)
+            if changed:
+                print(f"Producer disconnected: Device {self.device_id} is now OFFLINE.")
+                await self.channel_layer.group_send(
+                    self.group_name,
+                    {"type": "device_status", "status": "offline"}
+                )
 
 
     async def receive(self, text_data=None, bytes_data=None):
         # 1. ESP32 (Producer) sends raw video frame
         if bytes_data and self.role == 'producer':
+            await self.touch_producer_activity(self.device_id)
             annotated_frame = await asyncio.to_thread(self.process_frame, bytes_data, self.device_id)
             await self.channel_layer.group_send(
                 self.group_name,
@@ -111,6 +123,11 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
 
             if self.role == 'producer':
+                # logger.info(
+                #     "Sensor JSON received from device %s: %s",
+                #     self.device_id,
+                #     data,
+                # )
                 # 1. Save sensor log to database asynchronously
                 await self.save_sensor_log(self.device_id, data)
                 # Telemetry from ESP32 -> Broadcast to Flutter viewer
@@ -181,12 +198,30 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
 
     # --- Database Helpers (Sync to Async) ---
+    async def watch_producer_activity(self):
+        try:
+            while True:
+                await asyncio.sleep(self.PRODUCER_WATCHDOG_INTERVAL_SECONDS)
+                changed = await self.set_stale_producer_offline(self.device_id)
+                if changed:
+                    print(
+                        f"Producer timed out: Device {self.device_id} is now OFFLINE."
+                    )
+                    await self.channel_layer.group_send(
+                        self.group_name,
+                        {"type": "device_status", "status": "offline"}
+                    )
+                    return
+        except asyncio.CancelledError:
+            raise
+
     @database_sync_to_async
     def verify_viewer(self, token_key, device_id):
         if not token_key:
             return False, False
         try:
             token = Token.objects.select_related('user').get(key=token_key)
+            Device.mark_stale_devices_offline()
             device = Device.objects.select_related('owner').get(device_id=device_id)
             # Verify that the token owner is specifically the device owner
             if device.owner_id == token.user_id:
@@ -212,17 +247,37 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def set_producer_offline(self, device_id):
-        try:
-            Device.objects.filter(
-                device_id=device_id,
-                producer_connection_id=self.connection_id,
-            ).update(
-                is_online=False,
-                producer_connection_id=None,
-            )
-        except Device.DoesNotExist:
-            pass
+        return Device.objects.filter(
+            device_id=device_id,
+            producer_connection_id=self.connection_id,
+            is_online=True,
+        ).update(
+            is_online=False,
+            producer_connection_id=None,
+        ) > 0
 
+    @database_sync_to_async
+    def set_stale_producer_offline(self, device_id):
+        cutoff = timezone.now() - timedelta(
+            seconds=self.PRODUCER_TIMEOUT_SECONDS
+        )
+        return Device.objects.filter(
+            device_id=device_id,
+            producer_connection_id=self.connection_id,
+            is_online=True,
+            last_seen__lt=cutoff,
+        ).update(
+            is_online=False,
+            producer_connection_id=None,
+        ) > 0
+
+    @database_sync_to_async
+    def touch_producer_activity(self, device_id):
+        Device.objects.filter(
+            device_id=device_id,
+            producer_connection_id=self.connection_id,
+            is_online=True,
+        ).update(last_seen=timezone.now())
 
 
 
@@ -234,15 +289,46 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
             if connection_id is not None:
                 device_query = device_query.filter(producer_connection_id=connection_id)
             device = device_query.get()
-            SensorLog.objects.create(
+            ph = data.get('pH')
+            turbidity = data.get('turbidity_voltage', data.get('turbidity'))
+            temperature = data.get('temperature')
+            weight = data.get('weight_grams', data.get('weight'))
+            # logger.info(
+            #     "Sensor values extracted for device %s: pH=%r, "
+            #     "temperature=%r, turbidity=%r, weight=%r; JSON keys=%s; "
+            #     "payload=%r",
+            #     device_id,
+            #     ph,
+            #     temperature,
+            #     turbidity,
+            #     weight,
+            #     list(data.keys()),
+            #     data,
+            # )
+            if all(value is None for value in (ph, turbidity, temperature, weight)):
+                # logger.info(
+                #     "Skipping empty sensor log for device %s",
+                #     device_id,
+                # )
+                device.save(update_fields=['is_online', 'last_seen'])
+                return
+
+            sensor_log = SensorLog.objects.create(
                 device=device,
-                ph=data.get('pH'),
-                turbidity=data.get('turbidity_voltage', data.get('turbidity')),
-                temperature=data.get('temperature'),
-                weight=data.get('weight')  # <-- Save weight data
+                ph=ph,
+                turbidity=turbidity,
+                temperature=temperature,
+                weight=weight,
             )
+            # logger.info(
+            #     "Sensor data saved for device %s: temperature=%s, "
+            #     "turbidity=%s, weight=%s",
+            #     device_id,
+            #     sensor_log.temperature,
+            #     sensor_log.turbidity,
+            #     sensor_log.weight,
+            # )
             device.save(update_fields=['is_online', 'last_seen'])
         except Device.DoesNotExist:
             pass
    
-

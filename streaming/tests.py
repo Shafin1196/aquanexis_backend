@@ -1,5 +1,7 @@
 from asgiref.sync import async_to_sync
+from datetime import timedelta
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
@@ -82,14 +84,85 @@ class SensorHistoryViewTests(APITestCase):
                 "temperature": 26.81,
                 "turbidity_raw": 3218,
                 "turbidity_voltage": 4.623,
+                "weight_grams": 93.76,
             },
         )
 
 
         log = SensorLog.objects.get(device=self.device)
         self.assertEqual(log.turbidity, 4.623)
+        self.assertEqual(log.weight, 93.76)
 
+    def test_websocket_skips_empty_sensor_log(self):
+        consumer = VideoStreamConsumer()
 
+        async_to_sync(consumer.save_sensor_log)(
+            self.device.device_id,
+            {
+                "pH": None,
+                "temperature": None,
+                "turbidity_voltage": None,
+                "weight_grams": None,
+            },
+        )
 
+        self.assertFalse(SensorLog.objects.filter(device=self.device).exists())
 
+    def test_stale_producer_is_marked_offline_after_timeout(self):
+        consumer = VideoStreamConsumer()
+        consumer.connection_id = "6a1e0e1f-5dd2-4c3b-94e4-2f7f2c5f7d6d"
+        self.device.is_online = True
+        self.device.producer_connection_id = consumer.connection_id
+        self.device.save(
+            update_fields=["is_online", "producer_connection_id"]
+        )
+        Device.objects.filter(pk=self.device.pk).update(
+            last_seen=timezone.now() - timedelta(seconds=11)
+        )
 
+        changed = async_to_sync(consumer.set_stale_producer_offline)(
+            self.device.device_id
+        )
+
+        self.assertTrue(changed)
+        self.device.refresh_from_db()
+        self.assertFalse(self.device.is_online)
+        self.assertIsNone(self.device.producer_connection_id)
+
+    def test_stale_connection_cannot_mark_new_producer_offline(self):
+        old_consumer = VideoStreamConsumer()
+        old_consumer.connection_id = "6a1e0e1f-5dd2-4c3b-94e4-2f7f2c5f7d6d"
+        new_consumer = VideoStreamConsumer()
+        new_consumer.connection_id = "a8e6dd4b-f89a-4ce2-bc5b-4e1e438c5ce4"
+        self.device.is_online = True
+        self.device.producer_connection_id = new_consumer.connection_id
+        self.device.save(
+            update_fields=["is_online", "producer_connection_id"]
+        )
+
+        changed = async_to_sync(old_consumer.set_stale_producer_offline)(
+            self.device.device_id
+        )
+
+        self.assertFalse(changed)
+        self.device.refresh_from_db()
+        self.assertTrue(self.device.is_online)
+        self.assertEqual(
+            str(self.device.producer_connection_id),
+            new_consumer.connection_id,
+        )
+
+    def test_mark_stale_devices_offline_persists_status_cleanup(self):
+        self.device.is_online = True
+        self.device.producer_connection_id = "6a1e0e1f-5dd2-4c3b-94e4-2f7f2c5f7d6d"
+        self.device.save(update_fields=["is_online", "producer_connection_id"])
+        Device.objects.filter(pk=self.device.pk).update(
+            last_seen=timezone.now() - timedelta(seconds=11)
+        )
+
+        updated = Device.mark_stale_devices_offline()
+
+        self.assertEqual(updated, 1)
+        self.device.refresh_from_db()
+        self.assertFalse(self.device.is_online)
+        self.assertIsNone(self.device.producer_connection_id)

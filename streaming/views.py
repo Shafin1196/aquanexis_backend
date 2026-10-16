@@ -18,6 +18,7 @@ class RegisterView(APIView):
         if serializer.is_valid():
             user = serializer.save()
             token, _ = Token.objects.get_or_create(user=user)
+            Device.mark_stale_devices_offline()
             device = user.device
             return Response({
                 "message": "User and Device registered successfully!",
@@ -83,6 +84,8 @@ class LoginView(APIView):
         websocket_url = None
         try:
             device = user.device
+            Device.mark_stale_devices_offline()
+            device.refresh_from_db()
             device_info = {
                 "device_id": device.device_id,
                 "is_online": device.is_online,
@@ -176,6 +179,5 @@ class SensorHistoryView(APIView):
 
 
         return Response(data, status=status.HTTP_200_OK)
-
 
 

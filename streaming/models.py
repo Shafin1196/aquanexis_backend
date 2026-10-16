@@ -1,8 +1,13 @@
 from django.db import models
 from django.contrib.auth.models import User
 import uuid
+from datetime import timedelta
+
+from django.utils import timezone
 
 class Device(models.Model):
+    PRODUCER_TIMEOUT_SECONDS = 10
+
     # The unique hardware ID (e.g., printed on the bottom of the ESP32)
     device_id = models.CharField(max_length=100, unique=True)
     
@@ -20,6 +25,17 @@ class Device(models.Model):
 
     def __str__(self):
         return self.device_id
+
+    @classmethod
+    def mark_stale_devices_offline(cls):
+        cutoff = timezone.now() - timedelta(seconds=cls.PRODUCER_TIMEOUT_SECONDS)
+        return cls.objects.filter(
+            is_online=True,
+            last_seen__lt=cutoff,
+        ).update(
+            is_online=False,
+            producer_connection_id=None,
+        )
 
 
 class SensorLog(models.Model):
