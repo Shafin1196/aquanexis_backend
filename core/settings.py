@@ -53,7 +53,8 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     'rest_framework',
     'rest_framework.authtoken',
-    'streaming'
+    'streaming',
+    'notifications',
 ]
 
 
@@ -170,7 +171,7 @@ CHANNEL_LAYERS = {
 }
 CSRF_TRUSTED_ORIGINS = [
     "https://objectives-renewable-minority-drivers.trycloudflare.com",
-    "https://evaluated-are-declined-wrapping.trycloudflare.com",
+    "https://dir-stones-keep-mumbai.trycloudflare.com",
 ]
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

@@ -13,3 +13,4 @@ class DeviceAdmin(admin.ModelAdmin):
         return super().get_queryset(request)
 
 
+

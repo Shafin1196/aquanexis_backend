@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import uuid
+from collections import Counter
 from datetime import timedelta
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -12,7 +13,9 @@ from channels.db import database_sync_to_async
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from ultralytics import YOLO
-from .models import Device, SensorLog
+from .models import Device, SensorLog, DetectionLog
+from notifications.services import send_detection_alert
+
 # best.pt
 model = YOLO('best2.pt')
 logger = logging.getLogger(__name__)
@@ -20,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 class VideoStreamConsumer(AsyncWebsocketConsumer):
     last_alert_time = {}
+    class_detection_counts = {}
     COOLDOWN_SECONDS = 60
+    DETECTION_ALERT_THRESHOLD = 200
     PRODUCER_TIMEOUT_SECONDS = Device.PRODUCER_TIMEOUT_SECONDS
     PRODUCER_WATCHDOG_INTERVAL_SECONDS = 1
 
@@ -29,6 +34,7 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
         self.device_id = self.scope['url_route']['kwargs']['device_id']
         self.group_name = f"device_{self.device_id}"
         self.connection_id = uuid.uuid4()
+        self.latest_detection_counts = []
 
 
         # Parse query parameters from URL: ws://.../?role=...&token=...&key=...
@@ -110,7 +116,23 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
         # 1. ESP32 (Producer) sends raw video frame
         if bytes_data and self.role == 'producer':
             await self.touch_producer_activity(self.device_id)
-            annotated_frame = await asyncio.to_thread(self.process_frame, bytes_data, self.device_id)
+            (
+                annotated_frame,
+                detections,
+                alert_confidence,
+                detection_counts,
+            ) = await asyncio.to_thread(
+                self.process_frame,
+                bytes_data,
+                self.device_id,
+            )
+            self.latest_detection_counts = detection_counts
+            await self.save_detection_logs(self.device_id, detections)
+            if alert_confidence is not None:
+                await self.send_detection_notification(
+                    self.device_id,
+                    alert_confidence,
+                )
             await self.channel_layer.group_send(
                 self.group_name,
                 {'type': 'video_message', 'bytes': annotated_frame}
@@ -123,6 +145,7 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
 
 
             if self.role == 'producer':
+                data["detections"] = self.latest_detection_counts
                 # logger.info(
                 #     "Sensor JSON received from device %s: %s",
                 #     self.device_id,
@@ -182,19 +205,103 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
         )
 
 
-        if results[0].boxes.cls is not None:
-            classes = results[0].boxes.cls.int().cpu().tolist()
-            if 0 in classes:
-                current_time = time.time()
-                last_time = VideoStreamConsumer.last_alert_time.get(device_id, 0)
-                if current_time - last_time > VideoStreamConsumer.COOLDOWN_SECONDS:
-                    print(f"\n🚨 [ALARM] Target detected! Triggering notification for device: {device_id}\n")
+        result = results[0]
+        boxes = result.boxes
+        detections = []
+        alert_confidence = None
+        detection_class_ids = []
+
+        if boxes.cls is not None:
+            class_ids = boxes.cls.int().cpu().tolist()
+            confidences = boxes.conf.cpu().tolist()
+            coordinates = boxes.xyxy.cpu().tolist()
+            track_ids = (
+                boxes.id.int().cpu().tolist()
+                if boxes.id is not None
+                else [None] * len(class_ids)
+            )
+
+            for class_id, confidence, coordinate, track_id in zip(
+                class_ids,
+                confidences,
+                coordinates,
+                track_ids,
+            ):
+                if confidence < 0.5:
+                    continue
+
+                x1, y1, x2, y2 = coordinate
+                detections.append({
+                    "class_id": class_id,
+                    "class_name": model.names[class_id],
+                    "confidence": confidence,
+                    "track_id": track_id,
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                })
+                detection_class_ids.append(class_id)
+
+            if any(
+                class_id == 0 and confidence >= 0.5
+                for class_id, confidence in zip(class_ids, confidences)
+            ):
+                alert_confidence = max(
+                    confidence
+                    for class_id, confidence in zip(class_ids, confidences)
+                    if class_id == 0 and confidence >= 0.5
+                )
+                class_0_count = sum(
+                    class_id == 0 and confidence >= 0.5
+                    for class_id, confidence in zip(class_ids, confidences)
+                )
+                detection_count = (
+                    VideoStreamConsumer.class_detection_counts.get(device_id, 0)
+                    + class_0_count
+                )
+
+                if detection_count >= VideoStreamConsumer.DETECTION_ALERT_THRESHOLD:
+                    current_time = time.time()
+                    print(
+                        f"\n🚨 [ALARM] Class 0 detected "
+                        f"{VideoStreamConsumer.DETECTION_ALERT_THRESHOLD} times "
+                        f"for device: {device_id}\n"
+                    )
+                    VideoStreamConsumer.class_detection_counts[device_id] = 0
                     VideoStreamConsumer.last_alert_time[device_id] = current_time
+                else:
+                    VideoStreamConsumer.class_detection_counts[device_id] = detection_count
+
+                    current_time = time.time()
+                    last_time = VideoStreamConsumer.last_alert_time.get(device_id, 0)
+                    if current_time - last_time > VideoStreamConsumer.COOLDOWN_SECONDS:
+                        print(
+                            f"\n🚨 [ALARM] Abnormal activity detected! "
+                            f"Triggering notification for device: {device_id}\n"
+                        )
+                        VideoStreamConsumer.last_alert_time[device_id] = current_time
+                    else:
+                        alert_confidence = None
 
 
-        annotated_frame = results[0].plot()
+        annotated_frame = result.plot()
         _, buffer = cv2.imencode('.jpg', annotated_frame)
-        return buffer.tobytes()
+        class_counts = Counter(detection_class_ids)
+        detection_counts = [
+            {
+                "class_id": class_id,
+                "class_name": model.names[class_id],
+                "count": count,
+            }
+            for class_id, count in sorted(class_counts.items())
+        ]
+        return (
+            buffer.tobytes(),
+            detections,
+            alert_confidence,
+            detection_counts,
+        )
 
 
     # --- Database Helpers (Sync to Async) ---
@@ -278,6 +385,69 @@ class VideoStreamConsumer(AsyncWebsocketConsumer):
             producer_connection_id=self.connection_id,
             is_online=True,
         ).update(last_seen=timezone.now())
+
+    @database_sync_to_async
+    def save_detection_logs(self, device_id, detections):
+        if not detections:
+            return
+
+        device_query = Device.objects.filter(device_id=device_id)
+        connection_id = getattr(self, "connection_id", None)
+        if connection_id is not None:
+            device_query = device_query.filter(
+                producer_connection_id=connection_id,
+            )
+        device = device_query.get()
+
+        DetectionLog.objects.bulk_create([
+            DetectionLog(
+                device=device,
+                class_id=detection["class_id"],
+                class_name=detection["class_name"],
+                confidence=detection["confidence"],
+                track_id=detection["track_id"],
+                x1=detection["x1"],
+                y1=detection["y1"],
+                x2=detection["x2"],
+                y2=detection["y2"],
+            )
+            for detection in detections
+        ])
+
+    @database_sync_to_async
+    def send_detection_notification(self, device_id, confidence):
+        try:
+            device = Device.objects.select_related("owner").get(
+                device_id=device_id,
+            )
+        except Device.DoesNotExist:
+            logger.error(
+                "Cannot send detection alert: device %s does not exist.",
+                device_id,
+            )
+            return
+
+        if device.owner is None:
+            logger.warning(
+                "Cannot send detection alert for device %s: no owner.",
+                device_id,
+            )
+            return
+
+        try:
+            results = send_detection_alert(
+                user=device.owner,
+                device_id=device_id,
+                confidence=confidence,
+            )
+        except Exception:
+            logger.exception(
+                "FCM detection alert failed for device %s.",
+                device_id,
+            )
+            return
+
+        logger.info("FCM detection alert result for device %s: %s", device_id, results)
 
 
 
